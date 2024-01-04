@@ -122,6 +122,11 @@ func writeTasks(w fileWriter, loc *time.Location, tasks []*Task, reportError fun
 				fmt.Fprintf(buf, " 📅 %v", t.DueOn)
 			}
 			buf.WriteString("\n")
+			if t.Description != "" {
+				buf.WriteString("\n")
+				buf.WriteString(t.Description)
+				buf.WriteString("\n\n")
+			}
 		}
 
 		if err := w.writeFile(key+".md", buf.Bytes()); err != nil {

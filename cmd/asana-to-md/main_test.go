@@ -101,6 +101,29 @@ func TestWriteTasks(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "Multiple",
+			tasks: []*Task{
+				{
+					Name:      "Buy train ticket",
+					CreatedAt: time.Date(2024, time.January, 4, 1, 30, 20, 0, time.UTC),
+				},
+				{
+					Name:        "Set alarm",
+					CreatedAt:   time.Date(2024, time.January, 4, 1, 30, 10, 0, time.UTC),
+					Description: "Like really early.\nI hope you're ready.",
+				},
+			},
+			want: fstest.MapFS{
+				"202401031730.md": {
+					Data: []byte(
+						"- [ ] Set alarm #inbox\n" +
+							"\nLike really early.\nI hope you're ready.\n\n" +
+							"- [ ] Buy train ticket #inbox\n"),
+					Mode: fakeFileMode,
+				},
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

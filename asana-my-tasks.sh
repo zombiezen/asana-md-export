@@ -23,6 +23,33 @@ if [[ -z "${ASANA_ACCESS_TOKEN:-}" ]]; then
   exit 1
 fi
 
+project_name=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project)
+      project_name="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      # Unrecognized option
+      echo "usage: asana-my-tasks [--project NAME]" 1>&2
+      if [[ "$1" = '--help' ]]; then
+        exit 0
+      else
+        exit 64
+      fi
+      ;;
+    *)
+      # Positional arguments
+      break
+      ;;
+  esac
+done
+
 asana_curl() {
   local output
   if output="$(curl \
@@ -50,12 +77,18 @@ if [[ "$user_workspace_count" -ne 1 ]]; then
 fi
 user_workspace_gid="$(echo "$user_response" | jq --raw-output '.data.workspaces[0].gid')"
 
-user_task_list_gid="$(asana_curl \
-  --request GET \
-  --url "https://app.asana.com/api/1.0/users/me/user_task_list?workspace=${user_workspace_gid}" | \
-  jq --raw-output '.data.gid')"
+if [[ -n "$project_name" ]]; then
+  project_gid="$(asana_curl --request GET --url "https://app.asana.com/api/1.0/projects?workspace=${user_workspace_gid}" | \
+    jq --raw-output --arg name "$project_name" '.data[] | select(.name == $name) | .gid')"
+  task_list_url="https://app.asana.com/api/1.0/projects/${project_gid}/tasks?limit=100&completed_since=now&opt_fields=name,created_at,due_at,due_on,notes"
+else
+  user_task_list_gid="$(asana_curl \
+    --request GET \
+    --url "https://app.asana.com/api/1.0/users/me/user_task_list?workspace=${user_workspace_gid}" | \
+    jq --raw-output '.data.gid')"
+  task_list_url="https://app.asana.com/api/1.0/user_task_lists/${user_task_list_gid}/tasks?limit=100&completed_since=now&opt_fields=name,created_at,due_at,due_on,notes"
+fi
 
-task_list_url="https://app.asana.com/api/1.0/user_task_lists/${user_task_list_gid}/tasks?limit=100&completed_since=now&opt_fields=name,created_at,due_at,due_on,notes"
 while [[ -n "$task_list_url" ]] ; do
   page_response="$(asana_curl --request GET --url "$task_list_url")"
   echo "$page_response" | jq --compact-output '.data[]'

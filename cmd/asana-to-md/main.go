@@ -101,6 +101,8 @@ func main() {
 	}
 }
 
+const inboxTag = "inbox"
+
 type writeOptions struct {
 	loc            *time.Location
 	index          bool
@@ -111,6 +113,7 @@ type writeOptions struct {
 func writeTasks(w fileWriter, tasks []*Task, opts *writeOptions) {
 	grouped := groupTasksByMinute(opts.loc, tasks)
 	buf := new(bytes.Buffer)
+	headerBuf := new(bytes.Buffer)
 	for _, key := range sortedKeys(grouped) {
 		tasks := grouped[key]
 		sort.Slice(tasks, func(i, j int) bool {
@@ -122,7 +125,7 @@ func writeTasks(w fileWriter, tasks []*Task, opts *writeOptions) {
 			if !opts.omitCheckboxes {
 				buf.WriteString("[ ] ")
 			}
-			fmt.Fprintf(buf, "%s #inbox", t.Name)
+			fmt.Fprintf(buf, "%s #%s", t.Name, inboxTag)
 			switch {
 			case t.DueAt != nil:
 				fmt.Fprintf(buf, " 📅 %s", t.DueAt.In(opts.loc).Format("2006-01-02"))
@@ -137,16 +140,23 @@ func writeTasks(w fileWriter, tasks []*Task, opts *writeOptions) {
 			}
 		}
 
-		if err := w.writeFile(key+".md", buf.Bytes()); err != nil && opts.reportError != nil {
+		headerBuf.Reset()
+		if len(tasks) == 1 {
+			headerBuf.WriteString("---\n" + `title: "`)
+			headerBuf.WriteString(tasks[0].Name)
+			headerBuf.WriteString(`"` + "\ntags:\n  - " + inboxTag + "\n---\n")
+		}
+		if err := w.writeFile(key+".md", headerBuf.Bytes(), buf.Bytes()); err != nil && opts.reportError != nil {
 			opts.reportError(err)
 		}
 	}
 
 	if opts.index {
 		buf.Reset()
-		generateIndex(buf, grouped)
+		indexHeader := generateIndex(buf, opts.loc, tasks)
 		indexName := time.Now().In(opts.loc).Format(filenameTimeFormat)
-		if err := w.writeFile(indexName+".md", buf.Bytes()); err != nil && opts.reportError != nil {
+		err := w.writeFile(indexName+".md", indexHeader, buf.Bytes())
+		if err != nil && opts.reportError != nil {
 			opts.reportError(err)
 		}
 	}
@@ -169,25 +179,28 @@ func groupTasksByMinute(loc *time.Location, tasks []*Task) map[string][]*Task {
 	return grouped
 }
 
-func generateIndex(buf *bytes.Buffer, grouped map[string][]*Task) {
-	buf.WriteString("---\n" +
+func basenameForTask(loc *time.Location, t *Task) string {
+	return t.CreatedAt.In(loc).Format(filenameTimeFormat)
+}
+
+func generateIndex(buf *bytes.Buffer, loc *time.Location, tasks []*Task) (header []byte) {
+	header = []byte("---\n" +
 		"tags:\n" +
-		"- inbox\n" +
+		"  - " + inboxTag + "\n" +
 		"---\n\n")
-	for _, key := range sortedKeys(grouped) {
-		for _, task := range grouped[key] {
-			fmt.Fprintf(buf, "- [%s](%s.md)\n", task.Name, key)
-		}
+	for _, task := range tasks {
+		fmt.Fprintf(buf, "- [%s](%s.md)\n", task.Name, basenameForTask(loc, task))
 	}
+	return header
 }
 
 type fileWriter interface {
-	writeFile(name string, data []byte) error
+	writeFile(name string, header, data []byte) error
 }
 
 type dirWriter string
 
-func (dir dirWriter) writeFile(name string, data []byte) error {
+func (dir dirWriter) writeFile(name string, header, data []byte) error {
 	if !fs.ValidPath(name) || name == "." {
 		return &fs.PathError{
 			Op:   "write",
@@ -205,7 +218,10 @@ func (dir dirWriter) writeFile(name string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if needsBlankLine(f) {
+	isEmpty, needsBlankLine := fileEndInfo(f)
+	if isEmpty {
+		data = append(header[:len(header):len(header)], data...)
+	} else if needsBlankLine {
 		data = append([]byte("\n\n"), data...)
 	}
 	var errs [2]error
@@ -223,30 +239,30 @@ func (dir dirWriter) writeFile(name string, data []byte) error {
 	return nil
 }
 
-func needsBlankLine(r io.ReadSeeker) bool {
+func fileEndInfo(r io.ReadSeeker) (empty bool, needsBlankLine bool) {
 	size, err := r.Seek(0, io.SeekEnd)
 	if err != nil || size == 0 {
 		// If the file is not seekable, assume we're appending to something special
 		// and don't add blank line.
 		// If the file is empty, we don't need the blank line.
-		return false
+		return size == 0, false
 	}
 	const wantEnding = "\n\n"
 	if size < int64(len(wantEnding)) {
 		// Don't bother reading if we have some content
 		// but it's not long enough for it to end in a blank line.
-		return true
+		return false, true
 	}
 
 	// See if we end with a newline. If we fail here, assume we need a blank line.
 	if _, err := r.Seek(-int64(len(wantEnding)), io.SeekEnd); err != nil {
-		return true
+		return false, true
 	}
 	var buf [2]byte
 	if _, err := io.ReadFull(r, buf[:]); err != nil {
-		return true
+		return false, true
 	}
-	return string(buf[:]) != wantEnding
+	return false, string(buf[:]) != wantEnding
 }
 
 type logWriter struct {
@@ -254,7 +270,7 @@ type logWriter struct {
 	w   fileWriter
 }
 
-func (w *logWriter) writeFile(name string, data []byte) error {
+func (w *logWriter) writeFile(name string, header, data []byte) error {
 	if !fs.ValidPath(name) {
 		return &fs.PathError{
 			Op:   "write",
@@ -271,7 +287,7 @@ func (w *logWriter) writeFile(name string, data []byte) error {
 	}
 
 	fmt.Printf("%s\t%d lines%s\n", fsPath, bytes.Count(data, []byte("\n")), marker)
-	return w.w.writeFile(name, data)
+	return w.w.writeFile(name, header, data)
 }
 
 func sortedKeys[K ordered, V any](m map[K]V) []K {
@@ -291,7 +307,7 @@ type ordered interface {
 
 type nopWriter struct{}
 
-func (nopWriter) writeFile(name string, data []byte) error {
+func (nopWriter) writeFile(name string, header, data []byte) error {
 	if !fs.ValidPath(name) {
 		return &fs.PathError{
 			Op:   "write",

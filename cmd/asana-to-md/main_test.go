@@ -51,7 +51,7 @@ func TestWriteTasks(t *testing.T) {
 			},
 			want: fstest.MapFS{
 				"202401040805.md": {
-					Data: []byte("- [ ] Brush teeth #inbox\n"),
+					Data: []byte("---\ntitle: \"Brush teeth\"\ntags:\n  - inbox\n---\n- [ ] Brush teeth #inbox\n"),
 					Mode: fakeFileMode,
 				},
 			},
@@ -67,7 +67,7 @@ func TestWriteTasks(t *testing.T) {
 			},
 			want: fstest.MapFS{
 				"202401040805.md": {
-					Data: []byte("- [ ] Brush teeth #inbox 📅 2024-01-04\n"),
+					Data: []byte("---\ntitle: \"Brush teeth\"\ntags:\n  - inbox\n---\n- [ ] Brush teeth #inbox 📅 2024-01-04\n"),
 					Mode: fakeFileMode,
 				},
 			},
@@ -90,7 +90,7 @@ func TestWriteTasks(t *testing.T) {
 			},
 			want: fstest.MapFS{
 				"202401040805.md": {
-					Data: []byte("- [ ] Brush teeth #inbox\n"),
+					Data: []byte("---\ntitle: \"Brush teeth\"\ntags:\n  - inbox\n---\n- [ ] Brush teeth #inbox\n"),
 					Mode: fakeFileMode,
 				},
 				"202401031730.md": {
@@ -102,7 +102,7 @@ func TestWriteTasks(t *testing.T) {
 			},
 		},
 		{
-			name: "Multiple",
+			name: "MultipleWithDescription",
 			tasks: []*Task{
 				{
 					Name:      "Buy train ticket",
@@ -150,7 +150,7 @@ type mapWriter struct {
 	fs fstest.MapFS
 }
 
-func (w mapWriter) writeFile(name string, data []byte) error {
+func (w mapWriter) writeFile(name string, header, data []byte) error {
 	if !fs.ValidPath(name) {
 		return &fs.PathError{
 			Op:   "write",
@@ -171,6 +171,9 @@ func (w mapWriter) writeFile(name string, data []byte) error {
 			Path: name,
 			Err:  errors.New("not a file"),
 		}
+	}
+	if len(f.Data) == 0 {
+		f.Data = append(f.Data, header...)
 	}
 	f.Data = append(f.Data, data...)
 	return nil

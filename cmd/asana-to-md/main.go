@@ -43,6 +43,8 @@ type Task struct {
 func main() {
 	dryRun := flag.Bool("n", false, "dry run")
 	verbose := flag.Bool("v", false, "verbose")
+	index := flag.Bool("index", false, "whether to generate an index file")
+	actionable := flag.Bool("actionable", true, "whether to include checkboxes")
 	flag.Parse()
 	if flag.NArg() > 1 {
 		flag.Usage()
@@ -85,39 +87,45 @@ func main() {
 		// abort early if we're not doing a dry run and we didn't read our input correctly.
 		os.Exit(1)
 	}
-	writeTasks(output, time.Local, tasks, func(err error) {
-		fmt.Fprintf(os.Stderr, "asana-to-md: %v\n", err)
-		ok = false
+	writeTasks(output, tasks, &writeOptions{
+		loc:            time.Local,
+		index:          *index,
+		omitCheckboxes: !*actionable,
+		reportError: func(err error) {
+			fmt.Fprintf(os.Stderr, "asana-to-md: %v\n", err)
+			ok = false
+		},
 	})
 	if !ok {
 		os.Exit(1)
 	}
 }
 
-func writeTasks(w fileWriter, loc *time.Location, tasks []*Task, reportError func(error)) {
-	grouped := make(map[string][]*Task)
-	for _, t := range tasks {
-		key := t.CreatedAt.In(loc).Format("200601021504")
-		grouped[key] = append(grouped[key], t)
-	}
-	keys := make([]string, 0, len(tasks))
-	for k := range grouped {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+type writeOptions struct {
+	loc            *time.Location
+	index          bool
+	omitCheckboxes bool
+	reportError    func(error)
+}
 
+func writeTasks(w fileWriter, tasks []*Task, opts *writeOptions) {
+	grouped := groupTasksByMinute(opts.loc, tasks)
 	buf := new(bytes.Buffer)
-	for _, key := range keys {
+	for _, key := range sortedKeys(grouped) {
 		tasks := grouped[key]
 		sort.Slice(tasks, func(i, j int) bool {
 			return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
 		})
 		buf.Reset()
 		for _, t := range tasks {
-			fmt.Fprintf(buf, "- [ ] %s #inbox", t.Name)
+			buf.WriteString("- ")
+			if !opts.omitCheckboxes {
+				buf.WriteString("[ ] ")
+			}
+			fmt.Fprintf(buf, "%s #inbox", t.Name)
 			switch {
 			case t.DueAt != nil:
-				fmt.Fprintf(buf, " 📅 %s", t.DueAt.In(loc).Format("2006-01-02"))
+				fmt.Fprintf(buf, " 📅 %s", t.DueAt.In(opts.loc).Format("2006-01-02"))
 			case t.DueOn != nil:
 				fmt.Fprintf(buf, " 📅 %v", t.DueOn)
 			}
@@ -129,8 +137,46 @@ func writeTasks(w fileWriter, loc *time.Location, tasks []*Task, reportError fun
 			}
 		}
 
-		if err := w.writeFile(key+".md", buf.Bytes()); err != nil {
-			reportError(err)
+		if err := w.writeFile(key+".md", buf.Bytes()); err != nil && opts.reportError != nil {
+			opts.reportError(err)
+		}
+	}
+
+	if opts.index {
+		buf.Reset()
+		generateIndex(buf, grouped)
+		indexName := time.Now().In(opts.loc).Format(filenameTimeFormat)
+		if err := w.writeFile(indexName+".md", buf.Bytes()); err != nil && opts.reportError != nil {
+			opts.reportError(err)
+		}
+	}
+}
+
+const filenameTimeFormat = "200601021504"
+
+func groupTasksByMinute(loc *time.Location, tasks []*Task) map[string][]*Task {
+	grouped := make(map[string][]*Task)
+	for _, t := range tasks {
+		key := t.CreatedAt.In(loc).Format(filenameTimeFormat)
+		grouped[key] = append(grouped[key], t)
+	}
+	for key := range grouped {
+		tasks := grouped[key]
+		sort.Slice(tasks, func(i, j int) bool {
+			return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
+		})
+	}
+	return grouped
+}
+
+func generateIndex(buf *bytes.Buffer, grouped map[string][]*Task) {
+	buf.WriteString("---\n" +
+		"tags:\n" +
+		"- inbox\n" +
+		"---\n\n")
+	for _, key := range sortedKeys(grouped) {
+		for _, task := range grouped[key] {
+			fmt.Fprintf(buf, "- [%s](%s.md)\n", task.Name, key)
 		}
 	}
 }
@@ -226,6 +272,21 @@ func (w *logWriter) writeFile(name string, data []byte) error {
 
 	fmt.Printf("%s\t%d lines%s\n", fsPath, bytes.Count(data, []byte("\n")), marker)
 	return w.w.writeFile(name, data)
+}
+
+func sortedKeys[K ordered, V any](m map[K]V) []K {
+	keys := make([]K, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+type ordered interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr | ~float32 | ~float64 | ~string
 }
 
 type nopWriter struct{}

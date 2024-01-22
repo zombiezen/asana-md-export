@@ -128,8 +128,11 @@ func TestWriteTasks(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := make(fstest.MapFS)
-			writeTasks(mapWriter{got}, tz, test.tasks, func(err error) {
-				t.Error(err)
+			writeTasks(mapWriter{got}, test.tasks, &writeOptions{
+				loc: tz,
+				reportError: func(err error) {
+					t.Error(err)
+				},
 			})
 			if diff := cmp.Diff(test.want, got, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("written files (-want +got):\n%s", diff)
